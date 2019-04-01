@@ -1,0 +1,1095 @@
+---
+title: "Network Analysis: Amazon Product Reviews"
+author: "Group E (O-1-5)"
+date: "3/12/2019"
+output: 
+  html_document:
+    number_sections: true
+    theme: journal
+    self_contained: no
+    css: style.css
+---
+
+<style type="text/css">
+
+/* Whole document: */
+body{
+  font-family: Helvetica;
+  font-size: 12pt;
+}
+
+/* Table  */
+td{  
+  font-size: 10pt;
+}
+
+/* Table header  */
+th{  
+  font-size: 10pt;
+}
+
+.math {
+font-size: 9pt;
+}
+
+/* Headers */
+h1,h2,h3,h4,h5,h6{
+  font-size: 14pt;
+}
+</style>
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=6, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r message = FALSE, echo = FALSE, warning = FALSE}
+##Loading and installing required packages. 
+load_reqs <- function(reqs) {
+  for(pkg in reqs) {
+    if (!(pkg %in% installed.packages())) { install.packages(pkg)}
+    
+    library(pkg, character.only = T)
+  }
+}
+
+pkgs <- c("igraph", "adapr", "stringr", "plyr", "splitstackshape",
+          "gridExtra", "kableExtra", "ggplot2", "dplyr", "reshape2", "tidyr",
+          "network", "sna", "visNetwork", "tibble")
+
+load_reqs(pkgs)
+```
+
+# Introduction
+
+Complex systems are ubiquitous in nature. They can be seen in the ways in which humans interact online and offline, in how proteins interact with other proteins in the body, and more dynamics. Social network analysis can help one understand how connections are made between and amongst different entities to provide emergent properties of how the systems work, which factors influence the behaviour of the network, other players, the diffusion of information across the network, and more patterns. Network analysis applies to a myriad of domains, and with the advent of ecommerce, the applications for business can be of great interest to businesses. 
+
+The ability of a business understand the ways networks behave in their domain can hold great value for the firm to exploit. Understanding how customers interact with products, for example, can help the company to gauge sentiment. This can then be leveraged for business strategy development. Amazon, one of the largest global ecommerce platforms, has a plethora of data which can be analysed with this objective in mind. In this report, a subset of Amazon product review data was selected for social network analysis with this intent.
+
+An Amazon product review dataset containing 34,688,770 product reviews was selected from the Stanford Network Analysis Project (SNAP) data repository. A subset of the data was selected to provide only those reviews that pertained to the category **Musical Instruments**. This was further filtered for usability from approximately 10,000 product reviews to 3,462 records. Reviews were utilized with the aim to identify networks between  users and products which would provide the firm with insight into which users provided helpful reviews and which users were identified as influential in the network. Intuition suggested that review data could be utilized to identify users who were effective in disseminating information across the network, and who could be incentivized by the firm to write reviews. The idea being that encouraging influential users to write reviews would boost revenue for Amazon. The business applications will be discussed in later sections. 
+
+
+# Data Preparation
+
+Analysis began with data preparation which provided dataframes to be used for matrix creation. The resulting dataframe represented a bipartite relationship (user-to-product relation: one user gives one review to a product). The first part of our network analysis is based on this bipartite graph analysis. However, as the relationships among users was also of interest, a transformation was applied to the bipartite data to create a user-to-user graph which is also analyzed for insights into the network. Results and observations from these network analyses, both user-to-product and user-to-user are then compared and analyzed. It is off the back of this analysis that subsequent business applications and recommendations are made. 
+
+## Data Loading
+
+```{r echo= FALSE}
+
+raw <- read.csv("subset.csv", header = T, sep = ',')
+
+head(raw) %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%", height = "400px")
+
+```
+
+## Data understanding
+
+The sampled dataset contains 3,462 product reviews which exhibit a user-to-product relationship. If a user reviews a product on Amazon, a link is formed between the user and the product. There are several other attributes in the dataset described as follows. Additional columns, keep and new column name are also provided to indicate whether this data was retained for subsequent analysis, and the corresponding column name if it was retained.
+
+From initial data analysis, it was clear that additional information would be needed to provide valuable information for subsequent analysis. The initial dataset only contain the ASIN product number, the unique identifier which corresponds to each product. However, this data was not sufficient to identify the product description or the category to which the product belonged. As such, this information was imputed manually for all 3,462 product reviews. The ASIN was utilized to provide the type of product, and category of the product so this information could  be analysed to understand the types of products users are reviewing, and to identify any patterns which may exist wherein users may review products belonging to similar categories. 
+
+The appended data is summarized below:
+    
+attribute            description                                                          keep    new column name
+----------------     -------------------------------------------------------------------  ------  ---------------
+reviewer_ID          A unique identifier to the user (ie. reviewer) assigned by Amazon    Yes     user
+asin                 A unique identifier to the product assigned by Amazon                Yes     product
+reviewer name        Name of the reviewer                                                 Yes     name
+helpful              Number of times the review was rated helpful by other users          Yes     helpful_rating
+Tot_Num_ratings      Number of times the review was rated by other users                  Yes     total_rating
+reviewText           Comments on the product given by the reviewer                        No      n/a
+overall              Rating of the product given by the review                            Yes     product_rating
+summary              A short overall summary of the product given by the reviewer         No      n/a
+unixReviewTime       Time of the review in unix format                                    No      n/a
+reviewTime           Date of the review                                                   No      n/a
+Product.Description  Type of the product                                                  Yes     product_type
+Website              Link of the product to Amazon website                                No      n/a
+Instrument.Category  Category that the rated proudct belongs to                           Yes     product_category
+
+As summarized in the table above, some of the fields in the original dataset are not relevant to the analysis. Relevant data was extracted and additional variables were created to facilitate the creation of the adjacency and incidence matrices.
+
+
+## Data Manipulation
+
+```{r echo=TRUE}
+
+data <- data.frame(user=raw$reviewerID,
+                   name=raw$reviewerName,
+                   product=raw$asin,
+                   helpful_ratings=raw$helpful,
+                   total_ratings=raw$Total_Num_ratings,
+                   product_rating=raw$overall,
+                   product_type=raw$Product.Desciption,
+                   product_category=raw$Instrument.Category) %>%
+            mutate(perc_helpful=ifelse(is.na(helpful_ratings/total_ratings),
+                                     0, helpful_ratings/total_ratings), 
+                 helpful_plus1=helpful_ratings+1) # 
+
+# arrange the columns
+data <- data[, c(1,2,3,4,9,10,5,6,7,8)]
+
+```
+
+
+```{r echo=FALSE}
+
+head(data) %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+In this stage, the columns that are relevant to the network analysis were extracted and renamed accordingly. The following fields were created:
+perc_helpful: percentage that review rated as helpful by other users (helpful_ratings divided by total_ratings)
+helpful_plus1: number of helpful_ratings added by one; this variable is created to help with the creation of the weighted user-to-product incidence matrix (explained below)
+
+In order to introduce a weight attribute to the user-to-product matrix, the variable helpful_rating was created. High-quality reviews that are rated as helpful are considered more important than those who are not. However, it is also very likely that one review would not receive any rating by any other user and would lead to 0 in the helpful_rating field. As such, helpful_plus1 helps to deal with this concern. This variable was used as the weight attribute in the creation of the incidence matrix. In this way, not only was the importance of that review was taken into consideration, but the basic connection was retain (if a user reviews a product on Amazon, a link is formed between the user and the product).
+
+
+
+# Network Analysis: User to Product
+
+## User-to-product matrix
+
+In this section, the user-to-product network is analyzed. Since the user-to-product relationship is bipartite,  an incidence matrix that mirrors this relationship was created. As explained previously,  helpful_plus1 is used as the weight attribute for the incidence matrix.
+
+
+```{r echo=TRUE}
+
+## Creating a user-to-product incidence matrix (weighted by number of 'helpful ratings' received)
+m_u.p <- as.matrix(acast(data, user~product, value.var='helpful_plus1', fill=0))
+
+```
+
+```{r echo=FALSE}
+
+head(m_u.p,10) %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### User-to-product graph
+
+Based on the incidence matrix, an igraph object was generated and plotted it in a bipartite layout.
+
+```{r echo=TRUE}
+
+## Creating a bipartite user-to-product graph from the incidence matrix
+net_u.p <- graph_from_incidence_matrix(m_u.p, weighted = TRUE)
+
+```
+
+```{r fig.align='center', echo=FALSE}
+
+net_u.p.bp <- bipartite.projection(net_u.p)
+
+E(net_u.p)$type = 'review'
+V(net_u.p)$color <- c("orange", "steel blue")[V(net_u.p)$type+1]
+V(net_u.p)$shape <- c("circle", "square")[V(net_u.p)$type+1]
+V(net_u.p)$label <- ""
+
+plot(net_u.p, vertex.size=9, layout=layout_as_bipartite) 
+
+```
+
+As illustrate by the graph (orange circles represent users and the blue squares are products), there are clearly more users than products. Most of the products are connected to many reviewers, with the exception  of one outlier on the right. However, this graph provides minimal meaningful information. Data transformation is needed to extract further insight from the data.
+
+Another way to plot the bipartite graph to generate meaningful insights is by producing **helpful_rating** as the weight variable instead of **helpful_plus1**. In this way, many user-product connections will be lost, as many reviews are not rated helpful by other users, but could help filter noise and to discover patterns from the graph.
+
+
+```{r fig.align='center', echo=FALSE}
+
+m_u.p_2 <- as.matrix(acast(data, user~product, value.var='helpful_ratings', fill=0))
+net_u.p_2 <- graph_from_incidence_matrix(m_u.p_2, weighted = TRUE)
+
+E(net_u.p_2)$type = 'review'
+V(net_u.p_2)$color <- c("orange", "steel blue")[V(net_u.p)$type+1]
+V(net_u.p_2)$shape <- c("circle", "square")[V(net_u.p)$type+1]
+
+V(net_u.p_2)$label <- ""
+
+plot(net_u.p_2, vertex.size=9, layout=layout_as_bipartite) 
+
+```
+
+The second graph provides more insights. It is clear that only part of the users reviews are considered helpful by others and that these helpful reviews are related to a small number of products. Based on this observation, we can say that influential reviewers and popular products do exist in the network. In the next stage,centrality measures are calculated to identify those users and products.
+
+## Node Degree
+
+Since the user-to-product network is a bipartite graph,  the node degrees of users and products are calculated separately.
+
+### Histogram of Node Degree
+
+```{r  echo=TRUE}
+
+# Calculating node degree of the user nodes
+deg_u <- igraph::degree(net_u.p)[V(net_u.p)$type == FALSE]
+deg_u <- as.data.frame(deg_u[order(deg_u, decreasing = TRUE)])
+colnames(deg_u) <- 'degree'
+deg_u$user <- rownames(deg_u)
+
+# Calculating node degree of the product nodes
+deg_p <- igraph::degree(net_u.p)[V(net_u.p)$type == TRUE]
+deg_p <- as.data.frame(deg_p[order(deg_p, decreasing = TRUE)])
+colnames(deg_p) <- 'degree'
+deg_p$product <- rownames(deg_p)
+
+```
+
+```{r  fig.align='center', echo=FALSE}
+
+par(mfrow=c(1,2))
+hist(deg_u[,'degree'], main="Node degree: users", xlab = NULL)
+hist(deg_p[,'degree'], main="Node degree: products", xlab = NULL)
+
+
+data.frame(mean_of_degree=c(mean(deg_u[,'degree']),mean(deg_p[,'degree'])),
+           standard_deviation_of_degree=c(sd(deg_u[,'degree']),sd(deg_p[,'degree'])),
+           row.names = c('user', 'product'))
+
+```
+
+As illustrated by the graph, the degree distributions of both user nodes and product nodes are highly skewed to the right. In terms of user nodes, the mean of the degree is 2.75 with a standard deviaton of 1.9, which is consistent with observation from the histogram that most users had written less than 3 reviews. There are only a very small amount of users who gave reviews to more than 10 products. As for the product nodes, the mean node degree is 14.4 with a standard deviation of 16.7, resembling similar findings from the user nodes.
+
+### Top 10 users by node degree
+
+In this section, the top 10 users were filtered by node degree. This information is summarized in the following table:
+
+
+```{r echo=FALSE}
+
+u_top10_deg <- rownames(deg_u)[1:10]
+
+data_u_top10_deg <- data[data$user %in% u_top10_deg, ] 
+
+data_grouped_u_top10_deg <- group_by(data_u_top10_deg, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                              arrange(desc(sum_helpful_ratings)) %>%
+                              left_join(deg_u, by='user') %>%
+                              left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_u_top10_deg <- data_grouped_u_top10_deg[,c(1,7,2,3,4,5,6)]
+
+data_grouped_u_top10_deg[order(data_grouped_u_top10_deg$degree,decreasing = T) ,] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+The types of products purchased by these users are:
+
+```{r echo=FALSE}
+
+product_u_top10_deg <- as.matrix(sort(table(data_u_top10_deg$product_type),decreasing = TRUE))
+product_u_top10_deg[product_u_top10_deg[,1]>0,]
+
+```
+
+
+As suggested by the table, the top 10 users by node degree wrote more than 10 product reviews. However, it seems that the reviews by these users are often not rated as helpful by other users. For instance, the top user by node degree David W "Dave" wrote 21 product reviews but merely received 6 ratings of his reviews, only 3 of which were rated as helpful. The same was true for some other users in the top 10 list. In addition, it seems that these users are more interested in accessories such as strings, pedals picks and cables.
+
+
+### Top 10 products by node degree
+
+```{r echo=FALSE, warning=FALSE}
+
+p_top10_deg <- rownames(deg_p)[1:10]
+
+data_p_top10_deg <- data[data$product %in% p_top10_deg, c('product','product_type','product_category')] %>%
+                              left_join(deg_p, by='product')
+
+unique(data_p_top10_deg)[order(unique(data_p_top10_deg)$degree, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+The top 10 products by node degree are all guitar accessories. The most popular being a guitar winder with a node degree of 143 (number of reviews).
+
+
+## Weighted Degree
+
+In this section, we are going to examine the weighted degree for user and product nodes.
+
+```{r echo=TRUE}
+
+# Calculating weighted node degree of the user nodes
+deg_u_w <- graph.strength(net_u.p, vids=V(net_u.p), mode='all')[V(net_u.p)$type == FALSE]
+deg_u_w <- as.data.frame(deg_u_w[order(deg_u_w, decreasing = TRUE)])
+colnames(deg_u_w) <- 'weighted_degree'
+deg_u_w$user <- rownames(deg_u_w)
+
+# Calculating weighted node degree of the product nodes
+deg_p_w <- graph.strength(net_u.p, vids=V(net_u.p), mode='all')[V(net_u.p)$type == TRUE]
+deg_p_w <- as.data.frame(deg_p_w[order(deg_p_w, decreasing = TRUE)])
+colnames(deg_p_w) <- 'weighted_degree'
+deg_p_w$product <- rownames(deg_p_w)
+
+```
+
+
+```{r fig.align='center', echo=FALSE}
+
+par(mfrow=c(1,2))
+hist(deg_u_w[,'weighted_degree'], main="Weighted degree: users", xlab = NULL)
+hist(deg_p_w[,'weighted_degree'], main="Weighted degree: products", xlab = NULL)
+
+
+data.frame(mean_of_weighted_degree=c(mean(deg_u_w[,'weighted_degree']),mean(deg_p_w[,'weighted_degree'])),
+           standard_deviation_of_weighted_degree=c(sd(deg_u_w[,'weighted_degree']),sd(deg_p_w[,'weighted_degree'])),
+           row.names = c('user', 'product'))
+
+
+```
+
+Interestingly, the distributions of weighted degree are even more asymmetrical comparing to that of node degree. In terms of user nodes, the mean of weighted degree is 5.9 with a much higher standard deviation of 15.2, indicating that most of the user reviews received few or no helpful rating. The weighted degree of product nodes shared similar pattern.
+
+### Top 10 users by weighted degree
+
+```{r echo=FALSE}
+
+u_top10_deg_w <- rownames(deg_u_w)[1:10]
+
+data_u_top10_deg_w <- data[data$user %in% u_top10_deg_w, ] 
+
+data_grouped_u_top10_deg_w <- group_by(data_u_top10_deg_w, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                              arrange(desc(sum_helpful_ratings)) %>%
+                              left_join(deg_u_w, by='user') %>%
+                              left_join(deg_u, by='user') %>%
+                              left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_u_top10_deg_w <- data_grouped_u_top10_deg_w[,c(1,8,2,3,4,5,6,7)]
+
+data_grouped_u_top10_deg_w[order(data_grouped_u_top10_deg_w$weighted_degree, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+The types of products purchased by these users are:
+
+```{r echo=FALSE}
+
+product_u_top10_deg_w <- as.matrix(sort(table(data_u_top10_deg_w$product_type),decreasing = TRUE))
+product_u_top10_deg_w[product_u_top10_deg_w[,1]>0,]
+
+```
+
+The list of top 10 users ranked by weighted degree is completely different from that ranked by node degree. Typically, these users had written less than 5 product reviews but are often rated as helpful by other users. It is also interesting to note that the percentage of these reviews rated as helpful is very high, normally above 90%. In essence, those users with a high-weighted degree do not necessarily write many product reviews, however, what was written was often highly rated by other users. This type of user is more likely to resemble those who are considered as **influencers** among the network. These are essential for information diffusion in the network. 
+
+In addition, the type of products these users purchased are also different from the other group. The products these users bought included more musical instruments such as a  microphone or guitar, rather than simply accessories. These items could be considered as more expensive, and are likely to be purchased by users that are more discriminating in terms of product quality, and may be less price sensitive.
+
+This could explain why these product reviews were more popular: musical instruments are more expensive than accessories; buyers tend to carefully read the product reviews of these products before placing an order, resulting in higher chances of rating a product review.
+
+
+### Top 10 products by weighted degree
+
+```{r echo=FALSE, warning=FALSE}
+
+p_top10_deg_w <- rownames(deg_p_w)[1:10]
+
+data_p_top10_deg_w <- data[data$product %in% p_top10_deg_w, c('product','product_type','product_category')] %>%
+                              left_join(deg_p_w, by='product')
+
+unique(data_p_top10_deg_w)[order(unique(data_p_top10_deg_w)$weighted_degree, decreasing = T),] %>%
+  left_join(deg_p, by='product') %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+The top 10 products ranked by weighted degree included more musical instruments than those ranked by node degree, confirming the previous observation. The most popular product according to weighted degree is a microphone with 17 reviews rated as helpful in 294 times.
+
+
+
+## Closeness
+
+Closeness centrality measures the average length of the shortest path between the node and all other nodes within the network. In the context of our user-to-product network, the users or products that have high closeness centrality will also have higher exposure in the network. In other words, the reviews related to user/product with higher closeness are more likely to be seen by other users (this constitutes the shorter path). Thus, this would help the company identify these users/products to inform business actions to make the related reviews more attractive to potential customers. As such, these measures of closeness can drive business decisions, and increase potential for review for Amazon, and provide more helpful data to consumers. This can help to improve customer satisfaction. These insights could yield multifaceted benefits, including Improved customer satisfaction and reduction in customer churn.
+
+```{r echo=TRUE}
+
+# Calculating closeness of the user nodes
+close_u <- igraph::closeness(net_u.p, vids=V(net_u.p)[V(net_u.p)$type == FALSE],
+                             weights = E(net_u.p)$weight, mode='all')
+close_u <- as.data.frame(close_u[order(close_u, decreasing = TRUE)])
+colnames(close_u) <- 'closeness'
+close_u$user <- rownames(close_u)
+
+# Calculating closeness of the product nodes
+close_p <- igraph::closeness(net_u.p, vids=V(net_u.p)[V(net_u.p)$type == TRUE],
+                             weights = E(net_u.p)$weight, mode='all')
+close_p <- as.data.frame(close_p[order(close_p, decreasing = TRUE)])
+colnames(close_p) <- 'closeness'
+close_p$product <- rownames(close_p)
+
+```
+
+### Top 10 users by closeness
+
+```{r echo=FALSE}
+
+u_top10_close <- rownames(close_u)[1:10]
+
+data_u_top10_close <- data[data$user %in% u_top10_close, ] 
+
+data_grouped_u_top10_close <- group_by(data_u_top10_close, user) %>%
+                                summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                          sum_total_ratings = sum(total_ratings),
+                                          sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                   sum_helpful_ratings/sum_total_ratings),
+                                          avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(close_u, by='user') %>%
+                                left_join(deg_u, by='user') %>%
+                                left_join(deg_u_w, by='user') %>%
+                                left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_u_top10_close <- data_grouped_u_top10_close[,c(1,9,2,3,4,5,6,7,8)]
+
+data_grouped_u_top10_close[order(data_grouped_u_top10_close$closeness, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+According to the table, the top 10 users ranked by closeness are somewhat overlapping those with highest degree, but are different from those ranked by weighted degree. We can see that among these 10 users, three were also in the top 10 list ranked by node degree, and others tend to have a higher-than-average node degree. However, the weighted degrees of these users were average, indicating that their reviews were not highly regarded by other users. Considering that the users with higher closeness could exert indirect influence over buyer decisions (a higher chance of their reviews being seen by buyers), the low weighted degree suggests that the company could create plans to encourage these users to write high-quality reviews, thereby maximizing their indirect influence.
+
+
+### Top 10 products by closeness
+
+```{r echo=FALSE}
+
+p_top10_close <- rownames(close_p[1:10,])
+
+data_p_top10_close <- data[data$product %in% p_top10_close, c('product','product_type','product_category')] %>%
+                              left_join(close_p, by='product')
+
+unique(data_p_top10_close)[order(unique(data_p_top10_close)$closeness, decreasing = T),] %>%
+  left_join(deg_p, by='product') %>%
+  left_join(deg_p_w, by='product') %>%
+    kable() %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+      scroll_box(width = "100%")
+
+```
+
+The products with highest closeness resemble those with highest node degree. Most of these products are guitar accessories. This may be the result of a recommendation system where users who shop for musical instruments are also recommended to purchase these accessories. Therefore, it makes sense to strengthen the influence of the reviews on these products as they are likely to have high exposure to potential customers.
+
+## Betweenness
+
+Betweenness measures the extent to which a particular node lies on the shortest path between other nodes. In this case, the betweenness would tell one which users or products influence the flow within the network. By identifying the nodes with high betweenness, the company could improve the influence of the particular nodes through which potential buyers can be more easily directed to other types of products, thereby increasing sales opportunities.
+
+
+```{r echo=TRUE}
+
+# Calculating betweenness of the user nodes
+bet_u <- igraph::betweenness(net_u.p, v=V(net_u.p)[V(net_u.p)$type == FALSE],
+                             weights = E(net_u.p)$weight)
+bet_u <- as.data.frame(bet_u[order(bet_u, decreasing = TRUE)])
+colnames(bet_u) <- 'betweenness'
+bet_u$user <- rownames(bet_u)
+
+# Calculating betweenness of the product nodes
+bet_p <- igraph::betweenness(net_u.p, v=V(net_u.p)[V(net_u.p)$type == TRUE],
+                             weights = E(net_u.p)$weight)
+bet_p <- as.data.frame(bet_p[order(bet_p, decreasing = TRUE)])
+colnames(bet_p) <- 'betweenness'
+bet_p$product <- rownames(bet_p)
+
+```
+
+### Top 10 users by betweenness
+
+```{r echo=FALSE}
+
+u_top10_bet <- rownames(bet_u)[1:10]
+
+data_u_top10_bet <- data[data$user %in% u_top10_bet, ] 
+
+data_grouped_u_top10_bet <- group_by(data_u_top10_bet, user) %>%
+                                summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                          sum_total_ratings = sum(total_ratings),
+                                          sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                   sum_helpful_ratings/sum_total_ratings),
+                                          avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(bet_u, by='user') %>%
+                                left_join(close_u, by='user') %>%
+                                left_join(deg_u, by='user') %>%
+                                left_join(deg_u_w, by='user') %>%
+                                left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_u_top10_bet <- data_grouped_u_top10_bet[,c(1,10,2,3,4,5,6,7,8,9)]
+
+data_grouped_u_top10_bet[order(data_grouped_u_top10_bet$betweenness, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+As suggested by the table above, the list of top 10 users ranked by betweenness heavily overlaps with those in top 10 list by node degree. Among these ten users with high betweenness, 7 were also in the top 10 list by node degree. Moreover, these users also tend to have high closeness.
+
+### Top 10 products by betweenness
+
+```{r echo=FALSE}
+
+p_top10_bet <- rownames(bet_p[1:10,])
+
+data_p_top10_bet <- data[data$product %in% p_top10_bet, c('product','product_type','product_category')] %>%
+                              left_join(bet_p, by='product')
+
+unique(data_p_top10_bet)[order(unique(data_p_top10_bet)$betweenness, decreasing = T),] %>%
+  left_join(close_p, by='product') %>%
+  left_join(deg_p, by='product') %>%
+  left_join(deg_p_w, by='product') %>%
+    kable() %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+The top 10 products ranked by betweenness are similar to those with high node degree and closeness. Most of these products are guitar accessories. Interestingly, the most popular product ranked by node degree, closeness, and betweenness is a **winder** (a guitar accessory for winding strings for tuning purposes), with a weighted degree of 156.
+
+## User-to-product network: conclusion from centrality measures
+
+To conclude the first part of our network analysis, four centrality measures were calculated (node degree, weighted degree, closeness and betweenness) for user and product nodes. The results suggested that there are two groups of user-product mix: **influential reviewerss** and **star products**. 
+
+"Influential reviewers and "star products" had high weighted degree, meaning that reviews related to these nodes were considered highly valuable by other users. However, these nodes tend to have lower levels of node degree, closeness, and betweenness. One possible explaination could be that buyers did not have enough incentive to write reviews for products which already had popular reviews, thus decreasing the exposure of these products among the network. 
+
+A strategy to work with these types of users/products is to:
+
+
+1) offer promotions to influential reviewers, encouraging them to purchase more types of products
+2) offer incentives to bring more users to write reviews for the star products. Both proposals can increase the exposure of influential reviewers and star products in the network, thereby bringing more potential buyers.
+
+The second group is 'active shoppers' and 'popular products' which had high node degree, high closeness, high betweenness but low weighted degree. These nodes represented the most active and accessible points within the network. When the customers look for products within the network, they may find it easier to read reviews from active shoppers and reviews on popular products. Strategic opportunities for this group of user/product mix are:
+
+1) offer incentives to active shoppers, encouraging them to write high-quality reviews (eg. reviews with pictures and share personal experiences etc.)
+2) adjust the recommendation engine to build stronger links between popular products and start products. These measures will help improve quality of the edges of this group and aslo increase the exposure of influential reviewers and star products, thereby creating synergy effects and more sales opportunities. 
+
+# Network analysis: user-to-user graph
+
+The user-to-product network analysis is useful; however, expanding this to include user-to-user analysis can yield additional insight. 
+
+## Matrix creation
+
+To facilitate the analysis on the user-to-user network, the original bipartite user-to-product matrix  was transformed by multiplying it by its transpose:
+
+
+$$
+M_{u,u} =  \begin{pmatrix}
+  ~ & product_1  & \cdots & product_p \\
+  user_1 & a_{1,1} & \cdots & a_{1,p} \\
+  user_2 & a_{2,1} & \cdots & a_{2,p} \\  
+  \vdots  & \vdots  & \ddots & \vdots \\
+  user_u & a_{u,1} & \cdots & a_{u,p}
+ \end{pmatrix}  \begin{pmatrix}
+  ~ & user_1  & user_2 & \cdots & user_u \\
+  product_1 & a_{1,1} & a_{2,1} & \cdots & a_{u,1} \\
+  \vdots  & \vdots & \vdots   & \ddots & \vdots  \\
+  product_p & a_{1,p} & a_{2,p} & \cdots & a_{u,p}
+ \end{pmatrix} =  \begin{pmatrix}
+  ~ & user_1 & user_2 & \cdots & user_u \\
+  user_1 & t_{1,1} & t_{1,2} & \cdots & t_{1,u} \\
+  user_2 & t_{2,1} & t_{2,2} & \cdots & t_{2,p} \\  
+  \vdots  & \vdots & \vdots  & \ddots & \vdots \\
+  user_u & t_{u,1} & t_{u,2} & \cdots & t_{u,p}
+ \end{pmatrix} 
+$$
+
+```{r echo=TRUE}
+
+subset <- na.omit(data[1:200, ])
+m_u.p_subset <- as.matrix(table(subset$user,subset$product))
+
+# Transforming user-to-product matrix to user-to-user matrix
+m_u.u <- m_u.p_subset %*% t(m_u.p_subset) 
+
+```
+
+```{r echo=FALSE}
+
+head(m_u.u, 10) %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+
+## Reviewer Network
+
+The user-to-user network helpful in determining how different users are connected via similar products that they have reviewed. Connection between users can be very helpful in understanding which reviewers can be potentially influenced by a reviewer's review.
+
+For the purpose of analysing user-to-user connections, 200 of the 3462 records were used. The subselection was merely done to plot meaningful and interpretable graphs. Selected records translate into **176** nodes and **1883** edges. 
+
+Links between reviewers are undirected,  which, in essence, means that connections do not have a direction. Contrary to relationship between a person who sends an email and one who receives it, connections amongst reviewers on Amazon do not have a direction. The links amongst reviewers do not have a weight attribute, meaning that,all reviewers for a product have an equally important relationship. One link is not more important than another. Moreover, the name of edges is the reviewer ID on Amazon. The following attributes were also added to the Igraph:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+nodes <- distinct(subset, user, .keep_all= TRUE)
+net_u.u <- graph_from_adjacency_matrix(m_u.u, mode = "undirected", weighted=NULL, diag=F)
+edges <- get.data.frame(net_u.u, what="edges")
+new <- graph.data.frame(edges,directed=FALSE)
+z <- unique(nodes$product)
+
+range01 <- function(x)(x-min(x))/diff(range(x))
+rainbow(7)
+cRamp <- function(x){
+  cols <- colorRamp(colours())(range01(x))
+  apply(cols, 1, function(xt)rgb(xt[1], xt[2], xt[3], maxColorValue=255))
+} 
+nodes$col <- as.factor(cRamp(match(nodes$product,z)))
+
+color_vertices <- nodes %>%
+  group_by(product, col) %>%
+  summarise(n = n())
+
+vis_nodes <- data.frame(id=nodes$user,
+                        label=nodes$user,
+                        group=nodes$product,
+                        color=nodes$col,
+                        product_category= nodes$product_category)
+
+vis_edges <- data.frame(from=edges$from,
+                        to=edges$to)
+
+new
+```
+
+## Network Visualization
+
+The following interactive graph shows the network of Amazon reviewers. The nodes are colored by product ID. The drop downs can be used to observe connections of a particular user and it can also focus on only one product category and highlight how users within a product category are connected.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+visNetwork(vis_nodes, vis_edges, width = "100%") %>% visOptions(highlightNearest = list(enabled =TRUE, degree = 2),nodesIdSelection = TRUE, selectedBy= "product_category") %>% visInteraction(navigationButtons = TRUE) %>% visLegend() 
+
+```
+
+## Centrality Measures
+
+### Node Degree
+
+
+The following table shows top 10 reviewers interms of links with other reviewers. Degree is a measure for number of links that a reviewer has with other reviewers. degree_std is a measure to calculate the percentage of total reviewers in the dataset that a reviewer is connected to. Reviewer **Lee** has **77** links with different reviewers and this constitutes**44%** of the total reviewers in the sampled dataset.
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+deg_u.u <- igraph::degree(new, mode = "total")
+deg_u.u <- as.data.frame(deg_u.u[order(deg_u.u, decreasing = TRUE)])
+colnames(deg_u.u) <- 'degree'
+deg_u.u$user <- rownames(deg_u.u)
+
+top10_close_u.u <- rownames(deg_u.u)[1:10]
+
+data_top10_deg_u.u <- data[data$user %in% top10_close_u.u, ] 
+
+data_grouped_top10_deg_u.u <- group_by(data_top10_deg_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(deg_u.u, by='user') %>%
+                                left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_top10_deg_u.u <- data_grouped_top10_deg_u.u[,c(1,7,2,3,4,5,6)]
+
+data_grouped_top10_deg_u.u[order(data_grouped_top10_deg_u.u$degree, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### Closeness
+
+The closeness of a node describes its distance to all other nodes. A node with highest closeness is more central and can spread information to many other nodes. Per this definition, it is logical that the top 10 reviewers for centrality closeness are represented by reviewers that have reviewed multiple products. They are consequently connected to more reviewers.
+
+It is interesting to see that **Lee** has the most connections to reviewers and isclosest to other reviewers in the network. This proves that Lee has reviewed many products because it would not be possible for him to have highest closeness centrality if he had only reviewed one popular product. Reviewing one popular product would push him farther from reviewers of other products, and consequently, he would not have highest closeness centrality.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+close_u.u <- igraph::closeness(new, mode = "total")
+close_u.u <- as.data.frame(close_u.u[order(close_u.u, decreasing = TRUE)])
+colnames(close_u.u) <- 'closeness'
+close_u.u$user <- rownames(deg_u.u)
+
+top10_close_u.u <- rownames(close_u.u)[1:10]
+
+data_top10_close_u.u <- data[data$user %in% top10_close_u.u, ] 
+
+data_grouped_top10_close_u.u <- group_by(data_top10_close_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                              arrange(desc(sum_helpful_ratings)) %>%
+                              left_join(close_u.u, by='user') %>%
+                              left_join(deg_u.u, by='user') %>%
+                              left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_top10_close_u.u <- data_grouped_top10_close_u.u[,c(1,8,2,3,4,5,6,7)]
+
+data_grouped_top10_close_u.u[order(data_grouped_top10_close_u.u$closeness, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### Node Betweenness
+
+Node betweenness describes the number of shortest paths between nodes. Nodes with high betweenness centrality are on the path between many other nodes, i.e. these users are key connections or bridges between different groups of nodes. In a social network, these nodes would be very important because they are likely to pass on information to a wide reach of people. Identifying these users is essential to identify those which can facilitate information diffusion effectively across the network. In the case of Amazon, reviewer **Lee** is the focal point.
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+bet_u.u <- igraph::betweenness(new, directed = FALSE)
+bet_u.u <- as.data.frame(bet_u.u[order(bet_u.u, decreasing = TRUE)])
+colnames(bet_u.u) <- 'betweenness'
+bet_u.u$user <- rownames(bet_u.u)
+
+top10_bet_u.u <- rownames(bet_u.u)[1:10]
+
+data_top10_bet_u.u <- data[data$user %in% top10_bet_u.u, ] 
+
+data_grouped_top10_bet_u.u <- group_by(data_top10_bet_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                              arrange(desc(sum_helpful_ratings)) %>%
+                              left_join(bet_u.u, by='user') %>%
+                              left_join(close_u.u, by='user') %>%
+                              left_join(deg_u.u, by='user') %>%
+                              left_join(unique(data[, c('user','name')]), by='user')
+
+data_grouped_top10_bet_u.u <- data_grouped_top10_bet_u.u[,c(1,9,2,3,4,5,6,7,8)]
+
+data_grouped_top10_bet_u.u[order(data_grouped_top10_bet_u.u$betweenness, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### Transitivity
+
+Transitivity measures the probability that the adjacent vertices of a vertex are connected. In the network of Amazon reviewers, adjacent vertices review the same product. Therefore, it is only reasonable to expect that reviewers have a probability of being connected equal 1, and this is what the following table shows:
+
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+trans_u.u <- data.frame(user = V(new)$name,
+                           transitivity = transitivity(new, type = "local"),
+                           name = nodes$name)
+
+top10_trans_u.u <- trans_u.u %>%
+                      arrange(-transitivity) %>%
+                      .[1:10, ]
+
+data_top10_trans_u.u <- data[data$user %in% top10_trans_u.u$user, ] 
+
+data_grouped_top10_trans_u.u <- group_by(data_top10_trans_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(trans_u.u, by='user') %>%
+                                left_join(bet_u.u, by='user') %>%
+                                left_join(close_u.u, by='user') %>%
+                                left_join(deg_u.u, by='user')
+
+data_grouped_top10_trans_u.u <- data_grouped_top10_trans_u.u[,c(1,7,2,3,4,5,6,8,9,10)]
+
+data_grouped_top10_trans_u.u[order(data_grouped_top10_trans_u.u$transitivity, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### PageRank Centrality
+
+PageRank (originally used by Google to rank the importance of search results) is similar to eigenvector centrality. Eigenvector centrality scores nodes in a network according to the number of connections to high-degree nodes they have. It is therefore a measure of node importance. PageRank similarly considers nodes as more important if they have many incoming edges (or links). As *Lee* has the highest number of edges, it is reasonable to see that he also has the highest pagerank centrality. 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+pr_u.u <- igraph::page.rank(new, directed = FALSE)
+pr_u.u <- as.data.frame(pr_u.u$vector[order(pr_u.u$vector, decreasing = TRUE)])
+colnames(pr_u.u) <- 'page_rank'
+pr_u.u$user <- rownames(pr_u.u)
+
+top10_pr_u.u <- rownames(pr_u.u)[1:10]
+
+data_top10_pr_u.u <- data[data$user %in% top10_pr_u.u, ] 
+
+data_grouped_top10_pr_u.u <- group_by(data_top10_pr_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(pr_u.u, by='user') %>%
+                                left_join(trans_u.u, by='user') %>%
+                                left_join(bet_u.u, by='user') %>%
+                                left_join(close_u.u, by='user') %>%
+                                left_join(deg_u.u, by='user')
+
+data_grouped_top10_pr_u.u <- data_grouped_top10_pr_u.u[,c(1,8,2,3,4,5,6,7,9,10,11)]
+
+data_grouped_top10_pr_u.u[order(data_grouped_top10_pr_u.u$page_rank, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+### Eigen Centrality
+
+
+Reviewers that have connections with highly connected vertices are scored high on Eigen centrality. **Lee** has a perfect Eigen Centrality score of **1**. Therefore, the large network connection that **Lee** has also contains some reviewers who themselves have a large network.
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+eigen_u.u <- igraph::eigen_centrality(new, directed = FALSE)
+eigen_u.u <- as.data.frame(eigen_u.u$vector[order(eigen_u.u$vector, decreasing = TRUE)])
+colnames(eigen_u.u) <- 'eigen_centrality'
+eigen_u.u$user <- rownames(eigen_u.u)
+
+top10_eigen_u.u <- rownames(eigen_u.u)[1:10]
+
+data_top10_eigen_u.u <- data[data$user %in% top10_eigen_u.u, ] 
+
+data_grouped_top10_eigen_u.u <- group_by(data_top10_eigen_u.u, user) %>%
+                              summarise(sum_helpful_ratings = sum(helpful_ratings),
+                                        sum_total_ratings = sum(total_ratings),
+                                        sum_perc_helpul = ifelse(is.na(sum_helpful_ratings/sum_total_ratings), 0,
+                                                                 sum_helpful_ratings/sum_total_ratings),
+                                        avg_product_rating = mean(product_rating)) %>%
+                                arrange(desc(sum_helpful_ratings)) %>%
+                                left_join(eigen_u.u, by='user') %>%
+                                left_join(pr_u.u, by='user') %>%
+                                left_join(trans_u.u, by='user') %>%
+                                left_join(bet_u.u, by='user') %>%
+                                left_join(close_u.u, by='user') %>%
+                                left_join(deg_u.u, by='user')
+
+data_grouped_top10_eigen_u.u <- data_grouped_top10_eigen_u.u[,c(1,9,2,3,4,5,6,7,8,10,11,12)]
+
+data_grouped_top10_eigen_u.u[order(data_grouped_top10_eigen_u.u$eigen_centrality, decreasing = T),] %>%
+  kable() %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+     scroll_box(width = "100%")
+
+```
+
+
+### Summary of Centrality Measures
+
+
+The following graph analyzes metrics on product category level. 
+
+* Piano  
+Reviewers of products in Piano category only score high on Transitivity. This illustrates that, while these reviewers are not connected to the wider network of Amazon reviewers, they are tightly connected amongst themselves, as their adjacent nodes are inter-connected.
+* Cleaner and Audio  
+The reviewers for products in Cleaner and Audio categories do not have many personal connections with other reviewers. However, these reviewers still score highly on closeness centrality and transitivity. This implies that the reviewers for Cleaner and Audio categories are connected to reviewers who have many connections.
+* Guitar  
+Reviewers for products within the Guitar category score highly on all measures of centrality except betweenness centrality. The reason for a low score on betweenness centrality is that reviewers for products within other categories belong to close-knit communities without long connections with reviewers of other categories. Therefore, reviewers of guitar category cannot fall on a path that connects reviewers of closely knit communities to other communities. However, reviewers of the Guitar category do have direct connections with other categories and therefore  **influencers**.
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+metrics_u.u <- subset %>% distinct(user, product_category) %>%
+                  left_join(deg_u.u, by='user') %>%
+                  left_join(close_u.u, by='user') %>%
+                  left_join(bet_u.u, by='user') %>%
+                  left_join(trans_u.u, by='user') %>%
+                  left_join(pr_u.u, by='user') %>%
+                  left_join(eigen_u.u, by='user') %>%
+                  select(-name)
+
+metrics_u.u %>%
+  gather(x, y, degree:eigen_centrality) %>%
+  ggplot(aes(x = user, y = y, color=product_category)) +
+  geom_point(size = 0.5) +
+  facet_grid(x ~ product_category, scales = "free") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.text.y = element_blank())
+
+```
+
+
+## Edge Betweenness
+
+Edge betweenness informs which edge intersects with the most edges in a network. Edge **A17CU1D2CWXOHB--A3HLW3G0TA8GX1**, which is highlighted in red, is the edge that intersects with the most edges in the Amazon network. This edge connects **Rick and Andytoy**, who can be helpful for Amazon as they fall between most of the other connection within the amazon network. 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+edg_bet_u.u <- igraph::edge_betweenness(new, directed = FALSE)
+
+edg_bet_data <- data.frame(edge = attr(E(new), "vnames"),
+                     betweenness = edg_bet_u.u)%>%
+                     tibble::rownames_to_column() 
+
+edg_bet_data%>%
+  arrange(-betweenness) %>%
+    .[1:10, ] %>%
+   kable() %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+       scroll_box(width = "100%")
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+E(new)$color <- "grey"
+E(new)$width <- 1
+
+max_edg_bet_data <- which.max(edg_bet_u.u)
+E(new)[max_edg_bet_data]$color <- "red"
+
+plot(new,
+     vertex.label = " ",
+     vertex.color = nodes$col,
+     vertex.size = bet_u.u$betweenness * 0.005,
+     vertex.frame.color = "gray", 
+     vertex.label.color = "black",
+     edge.color = E(net_u.u)$color,
+     vertex.label.cex = 0.8,
+     edge.width = edg_bet_u.u * 0.01,
+     edge.arrow.size = 0.5)
+legend("topleft", legend = c(NA, "Product:", as.character(color_vertices$product), NA, "Edge color:", "Highest edge betweenness"), pch =19,
+       col = c(NA, NA, color_vertices$col, NA, NA, E(new)[max_edg_bet_data]$color), pt.cex = 1, cex = 0.5, bty = "n", ncol = 1,
+       title = "") 
+legend("topleft", legend = "", cex = 1, bty = "n", ncol = 1,
+       title = "Highest Edge Betweenness")
+```
+
+## Diameter
+
+
+In contrast to the shortest path between two nodes, longest path or diameter can also be calculated. Diameter is computed by calculating the number of people that are connected via mutual connections. Collectively, reviewers that are part of the longest diameter have a much wider network compared to the reviewer with highest node degree. Therefore, the following reviewers can be heplful to diffuse information throughout the network:
+
+* C.E. Frank
+* Charlo
+* Kurt Robair
+* Mike Tarrani
+* Rexomus
+* Andytoy
+* C.C. Chris
+
+```{r echo=FALSE}
+
+# Diameter
+  #diameter(sparse, directed = FALSE)
+new_diameter <- new
+node_diameter <- get.diameter(new_diameter,  directed = FALSE)
+# Plotting longest diameter
+  #V(sparse_diameter)$color <- "blue"
+V(new_diameter)$size <- 3
+
+  #V(sparse_diameter)[node_diameter]$color <- "red"
+V(new_diameter)[node_diameter]$size <- 5
+
+E(new_diameter)$color <- "grey"
+E(new_diameter)$width <- 1
+
+E(new_diameter, path = node_diameter)$color <- "red"
+E(new_diameter, path = node_diameter)$width <- 5
+
+plot(new_diameter,
+     vertex.label = " ",
+     vertex.color= nodes$col,
+     vertex.frame.color = "gray", 
+     vertex.label.color = "black", 
+     vertex.label.cex = 0.8,
+     edge.arrow.size = 0.5)
+legend("topleft", legend = c(NA, "Product:", as.character(color_vertices$product), NA, "Edge color:", "Longest Diameter"), pch =19,
+       col = c(NA, NA, color_vertices$col, NA, NA, E(new_diameter, path = node_diameter)$color), pt.cex = 1, cex = 0.5, bty = "n", ncol = 1,
+       title = "") 
+legend("topleft", legend = "", cex = 1, bty = "n", ncol = 1,
+       title = "Longest Diameter")
+
+```
+
+## Cluster Analysis
+
+**cluster_edge_betweenness** calculates the edge betweenness of the graph, removing the edge with the highest edge betweenness score, then recalculating edge betweenness of the edges and again removing the one with the highest score until a cluster has no edges that connects it to other clusters in the network.
+
+This was chosen for community detection because the initial interactive plot of Amazon's network showed clusters connected via single/few edges and edge betweenness showed edges with high edge betweenness. Removing those edges produced distinct clusters of reviewers, which can be tageted by Amazon through customized messaging/advertisement. 
+
+The dendrogram shows the process of splitting reviewers into clusters and the network plot shows distinct communitites that were produced as a result of splitting.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Clustering 
+ceb <- cluster_edge_betweenness(new, directed = FALSE, edge.betweenness = TRUE, merges = TRUE,                                     bridges = TRUE,modularity = TRUE, membership = TRUE) 
+# Dendrogram
+dendPlot(ceb, mode="hclust")
+
+# Community detection plot
+V(new)$community <- ceb$membership
+rain <- rainbow(14, alpha=.5)
+V(new)$color <- rain[V(new)$community]
+
+E(new)$color <- apply(as.data.frame(get.edgelist(new)), 1, 
+                function(x) ifelse(V(new)$community[x[1]] == V(new)$community[x[2]], 
+                                   rain[V(new)$community[x[1]]], '#00000000'))
+plot(new, vertex.size=4, vertex.label=NA, edge.color=E(new)$color)
+legend("topleft", legend = c(NA, "Communities:", as.character(unique(V(new)$community)), NA), pch =19,
+       col = c(NA, NA, unique(V(new)$color), NA, NA), pt.cex = 1, cex = 0.5, bty = "n", ncol = 1,
+       title = "") 
+legend("topleft", legend = "", cex = 1, bty = "n", ncol = 1,
+       title = "Community Detection")
+```
+
+### Clusters' members and modularity
+
+The following output shows the members of each cluster and modularity of the clustering algorithm. Networks with high modularity have dense connections between the nodes within modules but sparse connections between nodes in different modules. The modularity of the Amazon network is 0.43 which can be compared with another similar network to find out whether it is high enough to use the results of clustering excercise as a basis for targeted marketing. 
+
+
+```{r echo=FALSE}
+# Output of Clustering
+ceb
+```
+
+## Business Applications & Conclusions
+
+Additional opportunities exist for the exploitation of the data to yield further business insights. Sentiment analysis can be calculated on reviews to identify those users whose reviews are influential, but negative. Understanding sentiment from those users who are integral regarding information diffusion can help to mitigate decreases in revenue due to the impact of critical reviews. 
+
+The dataset can also be appended with the addition of price data to better understanding the average price of products which influential users are reviewing. Amazon can offer free or discounted merchandise on the higher-priced items to influential reviewers to encourage them to leave feedback on items which will yield higher revenue for the merchant. 
+
+As Amazon continues to grow their user and merchant base, understanding the ways these interact becomes mission-critical for the business. Conducting regular network analysis on these data points can provide long-term value for the firm to better understand their ecosystem to help drive business strategy and retain competitive advantage in the market. 
